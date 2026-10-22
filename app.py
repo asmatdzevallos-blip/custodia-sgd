@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "clave_secreta_custodia")
+app.secret_key = os.getenv("FLASK_SECRET_KEY")
 
 # Conexión a Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -99,7 +99,7 @@ def index():
     # Obtener documentos para mostrarlos dentro de cada expediente
     res_docs = (
         supabase.table("documentos")
-        .select("*")
+        .select("*, usuarios(nombre)")
         .order("creado_en", desc=True)
         .execute()
     )
@@ -170,6 +170,22 @@ def subir_documento():
         # 2. Extraer texto (Híbrido Digital + OCR con preprocesamiento)
         total_paginas, texto_extraido = extraer_texto_pdf_hibrido(pdf_bytes)
 
+        # 2.5. Calcular número de versión: si ya existe un documento con el mismo
+        # nombre en este expediente, la nueva versión es la siguiente; si no, es v1.
+        res_versiones = (
+            supabase.table("documentos")
+            .select("numero_version")
+            .eq("expediente_id", int(expediente_id))
+            .eq("nombre_archivo", archivo.filename)
+            .order("numero_version", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if res_versiones.data:
+            numero_version = res_versiones.data[0]["numero_version"] + 1
+        else:
+            numero_version = 1
+
         # 3. Guardar registro y texto OCR en la tabla documentos
         supabase.table("documentos").insert(
             {
@@ -179,6 +195,7 @@ def subir_documento():
                 "total_paginas": total_paginas,
                 "texto_extraido": texto_extraido,
                 "autor_id": int(autor_id) if autor_id else None,
+                "numero_version": numero_version,
             }
         ).execute()
 
@@ -188,6 +205,36 @@ def subir_documento():
         )
     except Exception as e:
         flash(f"Error al procesar el PDF: {str(e)}", "danger")
+
+    return redirect(url_for("index"))
+
+
+@app.route("/expedientes/<int:expediente_id>/eliminar", methods=["POST"])
+def eliminar_expediente(expediente_id):
+    try:
+        # 1. Borrar los archivos del expediente en Supabase Storage (best-effort)
+        try:
+            archivos = supabase.storage.from_("expedientes-pdf").list()
+            prefijo = f"exp_{expediente_id}_"
+            rutas_a_borrar = [
+                a["name"] for a in archivos if a["name"].startswith(prefijo)
+            ]
+            if rutas_a_borrar:
+                supabase.storage.from_("expedientes-pdf").remove(rutas_a_borrar)
+        except Exception:
+            pass  # si falla el borrado de Storage, igual seguimos con la BD
+
+        # 2. Borrar los documentos asociados
+        supabase.table("documentos").delete().eq(
+            "expediente_id", expediente_id
+        ).execute()
+
+        # 3. Borrar el expediente
+        supabase.table("expedientes").delete().eq("id", expediente_id).execute()
+
+        flash("Expediente eliminado correctamente.", "success")
+    except Exception as e:
+        flash(f"Error al eliminar el expediente: {str(e)}", "danger")
 
     return redirect(url_for("index"))
 
