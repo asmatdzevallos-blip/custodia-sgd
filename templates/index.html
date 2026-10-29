@@ -227,6 +227,22 @@
         }
         .btn-eliminar:hover{ background:var(--danger-soft); color:var(--danger); }
 
+        /* ---- Búsqueda (RF3) ---- */
+        .busqueda{
+            background:var(--paper);
+            border:1px solid var(--line);
+            border-radius:4px;
+            padding:12px 14px 14px;
+            margin:0 0 18px;
+        }
+        .busqueda .form-label{ font-size:12px; }
+        .btn-buscar{ padding:6px 18px; font-size:13px; }
+        .resultado-busqueda{
+            font-size:13px;
+            color:var(--muted);
+            margin-bottom:12px;
+        }
+
         .estado-vacio{
             text-align:center;
             padding:40px 20px;
@@ -325,7 +341,50 @@
             <div class="panel">
                 <div class="panel-titulo">Expedientes registrados</div>
                 <div class="panel-cuerpo">
-                    {% if not expedientes %}
+                    <!-- Búsqueda por metadatos (RF3): GET para que los filtros queden en la URL -->
+                    <form action="{{ url_for('index') }}" method="GET" class="busqueda row g-2 align-items-end">
+                        <div class="col-sm-6">
+                            <label class="form-label" for="f-numero">N.º de expediente</label>
+                            <input type="text" id="f-numero" name="numero" value="{{ filtros.numero }}" class="form-control form-control-sm" placeholder="Ej. 00452-2026">
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label" for="f-cliente">Cliente</label>
+                            <input type="text" id="f-cliente" name="cliente" value="{{ filtros.cliente }}" class="form-control form-control-sm" placeholder="Nombre o parte del nombre">
+                        </div>
+                        <div class="col-sm-4">
+                            <label class="form-label" for="f-materia">Materia</label>
+                            <select id="f-materia" name="materia" class="form-select form-select-sm">
+                                <option value="">Todas</option>
+                                {% for m in ['Civil', 'Penal', 'Familia'] %}
+                                <option value="{{ m }}" {% if filtros.materia == m %}selected{% endif %}>{{ m }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-6 col-sm-4">
+                            <label class="form-label" for="f-desde">Apertura desde</label>
+                            <input type="date" id="f-desde" name="desde" value="{{ filtros.desde }}" class="form-control form-control-sm">
+                        </div>
+                        <div class="col-6 col-sm-4">
+                            <label class="form-label" for="f-hasta">Apertura hasta</label>
+                            <input type="date" id="f-hasta" name="hasta" value="{{ filtros.hasta }}" class="form-control form-control-sm">
+                        </div>
+                        <div class="col-12 d-flex gap-2 justify-content-end">
+                            {% if hay_filtros %}
+                            <a href="{{ url_for('index') }}" class="btn-ghost">Limpiar</a>
+                            {% endif %}
+                            <button type="submit" class="btn-primario btn-buscar">Buscar</button>
+                        </div>
+                    </form>
+
+                    {% if hay_filtros %}
+                        <div class="resultado-busqueda">
+                            {{ expedientes|length }} expediente{{ '' if expedientes|length == 1 else 's' }} encontrado{{ '' if expedientes|length == 1 else 's' }}
+                        </div>
+                    {% endif %}
+
+                    {% if not expedientes and hay_filtros %}
+                        <div class="estado-vacio">Ningún expediente coincide con la búsqueda.</div>
+                    {% elif not expedientes %}
                         <div class="estado-vacio">No hay expedientes todavía. Crea el primero en el formulario de la izquierda.</div>
                     {% else %}
                         {% set materia_tag = {'Civil': 'tag-civil', 'Penal': 'tag-penal', 'Familia': 'tag-familia'} %}

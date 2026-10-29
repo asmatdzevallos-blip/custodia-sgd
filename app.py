@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import date
 from functools import wraps
 import fitz  # PyMuPDF
 import pytesseract
@@ -38,6 +39,14 @@ def login_required(vista):
         return vista(*args, **kwargs)
 
     return envoltura
+
+
+def fecha_valida(texto):
+    """Devuelve la fecha en formato AAAA-MM-DD si es válida; si no, cadena vacía."""
+    try:
+        return date.fromisoformat(texto.strip()).isoformat()
+    except ValueError:
+        return ""
 
 
 def preprocesar_imagen_para_ocr(pil_img):
@@ -147,23 +156,47 @@ def logout():
 @app.route("/")
 @login_required
 def index():
+    # Filtros de búsqueda (RF3): llegan por la URL, ej. /?cliente=perez&materia=Civil
+    filtros = {
+        "numero": request.args.get("numero", "").strip(),
+        "cliente": request.args.get("cliente", "").strip(),
+        "materia": request.args.get("materia", "").strip(),
+        "desde": fecha_valida(request.args.get("desde", "")),
+        "hasta": fecha_valida(request.args.get("hasta", "")),
+    }
+    hay_filtros = any(filtros.values())
+
+    if filtros["desde"] and filtros["hasta"] and filtros["desde"] > filtros["hasta"]:
+        flash("La fecha 'desde' es posterior a la fecha 'hasta'.", "warning")
+
     # Obtener expedientes ordenados del más reciente al más antiguo
-    res_exp = (
-        supabase.table("expedientes")
-        .select("*, usuarios(nombre)")
-        .order("creado_en", desc=True)
-        .execute()
-    )
+    consulta = supabase.table("expedientes").select("*, usuarios(nombre)")
+    # ilike = coincidencia parcial sin distinguir mayúsculas ("pere" encuentra "Pérez")
+    if filtros["numero"]:
+        consulta = consulta.ilike("numero_expediente", f"%{filtros['numero']}%")
+    if filtros["cliente"]:
+        consulta = consulta.ilike("cliente", f"%{filtros['cliente']}%")
+    if filtros["materia"]:
+        consulta = consulta.eq("materia", filtros["materia"])
+    if filtros["desde"]:
+        consulta = consulta.gte("fecha_apertura", filtros["desde"])
+    if filtros["hasta"]:
+        consulta = consulta.lte("fecha_apertura", filtros["hasta"])
+
+    res_exp = consulta.order("creado_en", desc=True).execute()
     expedientes = res_exp.data if res_exp.data else []
 
-    # Obtener documentos para mostrarlos dentro de cada expediente
-    res_docs = (
-        supabase.table("documentos")
-        .select("*, usuarios(nombre)")
-        .order("creado_en", desc=True)
-        .execute()
-    )
-    documentos = res_docs.data if res_docs.data else []
+    # Obtener solo los documentos de los expedientes mostrados
+    documentos = []
+    if expedientes:
+        res_docs = (
+            supabase.table("documentos")
+            .select("*, usuarios(nombre)")
+            .in_("expediente_id", [exp["id"] for exp in expedientes])
+            .order("creado_en", desc=True)
+            .execute()
+        )
+        documentos = res_docs.data if res_docs.data else []
 
     # Obtener lista de usuarios para el selector de responsable
     # Solo las columnas necesarias: nunca enviar password_hash a la plantilla
@@ -175,6 +208,8 @@ def index():
         expedientes=expedientes,
         documentos=documentos,
         usuarios=usuarios,
+        filtros=filtros,
+        hay_filtros=hay_filtros,
     )
 
 
