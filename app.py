@@ -1,23 +1,43 @@
 import os
 import time
+from functools import wraps
 import fitz  # PyMuPDF
 import pytesseract
 import cv2
 import numpy as np
 from PIL import Image
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+from werkzeug.security import check_password_hash
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY")
+# Si falta la variable, la app no arranca (mejor que fallar más tarde al usar la sesión)
+app.secret_key = os.environ["FLASK_SECRET_KEY"]
+# La cookie de sesión no se envía en peticiones originadas desde otros sitios
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 # Conexión a Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+def login_required(vista):
+    """
+    Decorador para rutas protegidas (RNF1): si no hay sesión iniciada,
+    redirige al login en lugar de ejecutar la vista.
+    """
+    @wraps(vista)
+    def envoltura(*args, **kwargs):
+        if "usuario_id" not in session:
+            flash("Inicia sesión para continuar.", "warning")
+            return redirect(url_for("login"))
+        return vista(*args, **kwargs)
+
+    return envoltura
 
 
 def preprocesar_imagen_para_ocr(pil_img):
@@ -85,7 +105,47 @@ def extraer_texto_pdf_hibrido(pdf_bytes):
     return total_paginas, "\n\n".join(texto_completo)
 
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if "usuario_id" in session:
+        return redirect(url_for("index"))
+
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+
+        res = (
+            supabase.table("usuarios")
+            .select("id, nombre, rol, password_hash")
+            .eq("email", email)
+            .limit(1)
+            .execute()
+        )
+        usuario = res.data[0] if res.data else None
+
+        # Mismo mensaje si el correo no existe o si la contraseña es incorrecta,
+        # para no revelar qué correos están registrados.
+        if usuario and check_password_hash(usuario["password_hash"] or "", password):
+            session.clear()
+            session["usuario_id"] = usuario["id"]
+            session["nombre"] = usuario["nombre"]
+            session["rol"] = usuario["rol"]
+            return redirect(url_for("index"))
+
+        flash("Correo o contraseña incorrectos.", "danger")
+
+    return render_template("login.html")
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    flash("Sesión cerrada.", "success")
+    return redirect(url_for("login"))
+
+
 @app.route("/")
+@login_required
 def index():
     # Obtener expedientes ordenados del más reciente al más antiguo
     res_exp = (
@@ -106,7 +166,8 @@ def index():
     documentos = res_docs.data if res_docs.data else []
 
     # Obtener lista de usuarios para el selector de responsable
-    res_users = supabase.table("usuarios").select("*").execute()
+    # Solo las columnas necesarias: nunca enviar password_hash a la plantilla
+    res_users = supabase.table("usuarios").select("id, nombre, rol").execute()
     usuarios = res_users.data if res_users.data else []
 
     return render_template(
@@ -118,6 +179,7 @@ def index():
 
 
 @app.route("/expedientes/nuevo", methods=["POST"])
+@login_required
 def crear_expediente():
     numero_expediente = request.form.get("numero_expediente", "").strip()
     cliente = request.form.get("cliente", "").strip()
@@ -143,9 +205,11 @@ def crear_expediente():
 
 
 @app.route("/documentos/subir", methods=["POST"])
+@login_required
 def subir_documento():
     expediente_id = request.form.get("expediente_id")
-    autor_id = request.form.get("autor_id")
+    # El autor es quien tiene la sesión iniciada, no un valor elegido en el formulario
+    autor_id = session["usuario_id"]
     archivo = request.files.get("archivo_pdf")
 
     if not archivo or archivo.filename == "":
@@ -194,7 +258,7 @@ def subir_documento():
                 "archivo_url": archivo_url,
                 "total_paginas": total_paginas,
                 "texto_extraido": texto_extraido,
-                "autor_id": int(autor_id) if autor_id else None,
+                "autor_id": autor_id,
                 "numero_version": numero_version,
             }
         ).execute()
@@ -210,6 +274,7 @@ def subir_documento():
 
 
 @app.route("/expedientes/<int:expediente_id>/eliminar", methods=["POST"])
+@login_required
 def eliminar_expediente(expediente_id):
     try:
         # 1. Borrar los archivos del expediente en Supabase Storage (best-effort)
