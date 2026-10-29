@@ -41,6 +41,83 @@ def login_required(vista):
     return envoltura
 
 
+# ---- Roles y permisos (RF5) ----
+# titular:   ve todo, hace todo; único que elimina y reasigna
+# asistente: ve todo, registra expedientes y sube PDF
+# abogado:   solo ve sus expedientes (abogado_responsable_id) y sube PDF a ellos
+ROLES_RESPONSABLES = ["titular", "abogado"]  # roles que pueden llevar un expediente
+
+
+def requiere_rol(*roles):
+    """
+    Decorador: solo deja pasar a los roles indicados. Va debajo de @login_required.
+    Ej.: @requiere_rol("titular")
+    """
+    def decorador(vista):
+        @wraps(vista)
+        def envoltura(*args, **kwargs):
+            if session.get("rol") not in roles:
+                flash("No tienes permiso para realizar esta acción.", "danger")
+                return redirect(url_for("index"))
+            return vista(*args, **kwargs)
+
+        return envoltura
+
+    return decorador
+
+
+def ve_todos_los_expedientes():
+    return session.get("rol") in ("titular", "asistente")
+
+
+def obtener_expediente_permitido(expediente_id):
+    """
+    Devuelve el expediente si existe y el usuario puede verlo; si no, None.
+    Para el usuario no hay diferencia entre "no existe" y "no es tuyo".
+    """
+    res = (
+        supabase.table("expedientes")
+        .select("id, numero_expediente, abogado_responsable_id")
+        .eq("id", expediente_id)
+        .limit(1)
+        .execute()
+    )
+    expediente = res.data[0] if res.data else None
+    if expediente is None:
+        return None
+    if ve_todos_los_expedientes():
+        return expediente
+    if expediente["abogado_responsable_id"] == session.get("usuario_id"):
+        return expediente
+    return None
+
+
+def id_responsable_valido(valor):
+    """
+    Devuelve el id si corresponde a un usuario que puede ser responsable
+    (titular o abogado); si no, None. Evita asignar al asistente o ids inventados.
+    """
+    if not valor or not str(valor).isdigit():
+        return None
+    res = (
+        supabase.table("usuarios")
+        .select("id")
+        .eq("id", int(valor))
+        .in_("rol", ROLES_RESPONSABLES)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0]["id"] if res.data else None
+
+
+def ruta_en_storage(archivo_url):
+    """
+    Extrae la ruta dentro del bucket a partir de la URL guardada en la BD.
+    Ej.: .../object/public/expedientes-pdf/exp_1_123_doc.pdf -> exp_1_123_doc.pdf
+    """
+    return archivo_url.split("/expedientes-pdf/", 1)[-1]
+
+
 def fecha_valida(texto):
     """Devuelve la fecha en formato AAAA-MM-DD si es válida; si no, cadena vacía."""
     try:
@@ -171,6 +248,9 @@ def index():
 
     # Obtener expedientes ordenados del más reciente al más antiguo
     consulta = supabase.table("expedientes").select("*, usuarios(nombre)")
+    # RF5: el abogado a cargo solo ve los expedientes de los que es responsable
+    if not ve_todos_los_expedientes():
+        consulta = consulta.eq("abogado_responsable_id", session["usuario_id"])
     # ilike = coincidencia parcial sin distinguir mayúsculas ("pere" encuentra "Pérez")
     if filtros["numero"]:
         consulta = consulta.ilike("numero_expediente", f"%{filtros['numero']}%")
@@ -198,9 +278,14 @@ def index():
         )
         documentos = res_docs.data if res_docs.data else []
 
-    # Obtener lista de usuarios para el selector de responsable
+    # Obtener lista de posibles responsables (titular y abogados) para los selectores
     # Solo las columnas necesarias: nunca enviar password_hash a la plantilla
-    res_users = supabase.table("usuarios").select("id, nombre, rol").execute()
+    res_users = (
+        supabase.table("usuarios")
+        .select("id, nombre, rol")
+        .in_("rol", ROLES_RESPONSABLES)
+        .execute()
+    )
     usuarios = res_users.data if res_users.data else []
 
     return render_template(
@@ -220,16 +305,24 @@ def crear_expediente():
     cliente = request.form.get("cliente", "").strip()
     materia = request.form.get("materia", "").strip()
     fecha_apertura = request.form.get("fecha_apertura", "").strip()
-    abogado_id = request.form.get("abogado_responsable_id")
 
     try:
+        if session["rol"] == "abogado":
+            # RF5: el abogado a cargo queda como responsable de lo que registra
+            abogado_id = session["usuario_id"]
+        else:
+            abogado_id = id_responsable_valido(request.form.get("abogado_responsable_id"))
+            if abogado_id is None:
+                flash("Selecciona un abogado responsable válido.", "warning")
+                return redirect(url_for("index"))
+
         supabase.table("expedientes").insert(
             {
                 "numero_expediente": numero_expediente,
                 "cliente": cliente,
                 "materia": materia,
                 "fecha_apertura": fecha_apertura,
-                "abogado_responsable_id": int(abogado_id) if abogado_id else None,
+                "abogado_responsable_id": abogado_id,
             }
         ).execute()
         flash(f"Expediente {numero_expediente} registrado correctamente.", "success")
@@ -247,6 +340,11 @@ def subir_documento():
     autor_id = session["usuario_id"]
     archivo = request.files.get("archivo_pdf")
 
+    # RF5: solo se sube a expedientes que el usuario puede ver
+    if not expediente_id or not expediente_id.isdigit() or obtener_expediente_permitido(int(expediente_id)) is None:
+        flash("No tienes permiso para subir documentos a ese expediente.", "danger")
+        return redirect(url_for("index"))
+
     if not archivo or archivo.filename == "":
         flash("Por favor selecciona un archivo PDF válido.", "warning")
         return redirect(url_for("index"))
@@ -262,6 +360,8 @@ def subir_documento():
             file=pdf_bytes,
             file_options={"content-type": "application/pdf"},
         )
+        # Se guarda con el formato de URL de siempre; con el bucket privado esta URL
+        # ya no abre el PDF: se accede por /documentos/<id>/pdf (ver ver_pdf)
         archivo_url = supabase.storage.from_("expedientes-pdf").get_public_url(
             ruta_storage
         )
@@ -308,17 +408,70 @@ def subir_documento():
     return redirect(url_for("index"))
 
 
+@app.route("/documentos/<int:doc_id>/pdf")
+@login_required
+def ver_pdf(doc_id):
+    """
+    RF5: el bucket es privado. Se revisa el permiso y se redirige a un enlace
+    firmado que expira en 5 minutos, así copiar el enlace no da acceso permanente.
+    """
+    res = (
+        supabase.table("documentos")
+        .select("expediente_id, archivo_url")
+        .eq("id", doc_id)
+        .limit(1)
+        .execute()
+    )
+    documento = res.data[0] if res.data else None
+    if documento is None or obtener_expediente_permitido(documento["expediente_id"]) is None:
+        flash("No tienes permiso para ver ese documento.", "danger")
+        return redirect(url_for("index"))
+
+    try:
+        firmado = supabase.storage.from_("expedientes-pdf").create_signed_url(
+            ruta_en_storage(documento["archivo_url"]), 300
+        )
+        return redirect(firmado.get("signedURL") or firmado["signedUrl"])
+    except Exception as e:
+        flash(f"No se pudo abrir el PDF: {str(e)}", "danger")
+        return redirect(url_for("index"))
+
+
+@app.route("/expedientes/<int:expediente_id>/reasignar", methods=["POST"])
+@login_required
+@requiere_rol("titular")
+def reasignar_expediente(expediente_id):
+    abogado_id = id_responsable_valido(request.form.get("abogado_responsable_id"))
+    if abogado_id is None:
+        flash("Selecciona un abogado responsable válido.", "warning")
+        return redirect(url_for("index"))
+
+    try:
+        supabase.table("expedientes").update(
+            {"abogado_responsable_id": abogado_id}
+        ).eq("id", expediente_id).execute()
+        flash("Responsable del expediente actualizado.", "success")
+    except Exception as e:
+        flash(f"Error al reasignar el expediente: {str(e)}", "danger")
+
+    return redirect(url_for("index"))
+
+
 @app.route("/expedientes/<int:expediente_id>/eliminar", methods=["POST"])
 @login_required
+@requiere_rol("titular")
 def eliminar_expediente(expediente_id):
     try:
-        # 1. Borrar los archivos del expediente en Supabase Storage (best-effort)
+        # 1. Borrar los PDF del expediente en Supabase Storage (best-effort).
+        # Las rutas salen de la tabla documentos (list() del bucket solo devuelve 100).
         try:
-            archivos = supabase.storage.from_("expedientes-pdf").list()
-            prefijo = f"exp_{expediente_id}_"
-            rutas_a_borrar = [
-                a["name"] for a in archivos if a["name"].startswith(prefijo)
-            ]
+            res_docs = (
+                supabase.table("documentos")
+                .select("archivo_url")
+                .eq("expediente_id", expediente_id)
+                .execute()
+            )
+            rutas_a_borrar = [ruta_en_storage(d["archivo_url"]) for d in res_docs.data or []]
             if rutas_a_borrar:
                 supabase.storage.from_("expedientes-pdf").remove(rutas_a_borrar)
         except Exception:
