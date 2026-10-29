@@ -52,6 +52,22 @@
             color:#C9CDD3;
             margin-top:2px;
         }
+        .cabecera .sesion{
+            font-size:13px;
+            color:#C9CDD3;
+            text-align:right;
+        }
+        .cabecera .sesion strong{ color:var(--paper); font-weight:500; }
+        .btn-salir{
+            background:transparent;
+            border:1px solid #4A5A6B;
+            color:var(--paper);
+            border-radius:3px;
+            font-size:12px;
+            padding:3px 10px;
+            margin-top:6px;
+        }
+        .btn-salir:hover{ border-color:var(--paper); }
         .cabecera .etapa{
             display:inline-block;
             font-size:12px;
@@ -235,10 +251,18 @@
 <body>
 
 <div class="cabecera">
-    <div class="container">
-        <div class="marca">Custodia</div>
-        <div class="descripcion">Gestión documental para estudios jurídicos</div>
-        <span class="etapa">Sprint 1 · Repositorio, metadatos y OCR</span>
+    <div class="container d-flex justify-content-between align-items-start">
+        <div>
+            <div class="marca">Custodia</div>
+            <div class="descripcion">Gestión documental para estudios jurídicos</div>
+            <span class="etapa">Sprint 2 · Acceso, búsqueda y roles</span>
+        </div>
+        <div class="sesion">
+            <strong>{{ session.nombre }}</strong> · {{ session.rol }}
+            <form action="{{ url_for('logout') }}" method="POST">
+                <button type="submit" class="btn-salir">Cerrar sesión</button>
+            </form>
+        </div>
     </div>
 </div>
 
@@ -324,17 +348,10 @@
                             <!-- Formulario para subir PDF a este expediente -->
                             <form action="{{ url_for('subir_documento') }}" method="POST" enctype="multipart/form-data" class="fila-subida row g-2 align-items-center">
                                 <input type="hidden" name="expediente_id" value="{{ exp.id }}">
-                                <div class="col-sm-6">
+                                <div class="col-sm-8">
                                     <input type="file" name="archivo_pdf" accept="application/pdf" class="form-control form-control-sm" required>
                                 </div>
-                                <div class="col-sm-3">
-                                    <select name="autor_id" class="form-select form-select-sm">
-                                        {% for u in usuarios %}
-                                        <option value="{{ u.id }}">Subido por: {{ u.nombre }}</option>
-                                        {% endfor %}
-                                    </select>
-                                </div>
-                                <div class="col-sm-3">
+                                <div class="col-sm-4">
                                     <button type="submit" class="btn-subir w-100">Subir PDF + OCR</button>
                                 </div>
                             </form>
