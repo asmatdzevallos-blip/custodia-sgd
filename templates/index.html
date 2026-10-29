@@ -156,6 +156,10 @@
             color:var(--muted);
         }
 
+        .reasignar{ margin-top:10px; }
+        .reasignar .form-label{ font-size:12px; white-space:nowrap; }
+        .reasignar .form-select{ max-width:220px; }
+
         .fila-subida{
             background:var(--paper);
             border:1px solid var(--line);
@@ -322,6 +326,8 @@
                             <label class="form-label">Fecha de apertura</label>
                             <input type="date" name="fecha_apertura" class="form-control" required>
                         </div>
+                        {# RF5: el abogado a cargo queda como responsable automáticamente #}
+                        {% if session.rol != 'abogado' %}
                         <div class="mb-3">
                             <label class="form-label">Abogado responsable</label>
                             <select name="abogado_responsable_id" class="form-select">
@@ -330,6 +336,7 @@
                                 {% endfor %}
                             </select>
                         </div>
+                        {% endif %}
                         <button type="submit" class="btn-primario w-100">Registrar expediente</button>
                     </form>
                 </div>
@@ -397,12 +404,28 @@
                                     <span class="tag {{ materia_tag.get(exp.materia, 'tag-civil') }}">{{ exp.materia }}</span>
                                     <h3 class="serif">{{ exp.cliente }}</h3>
                                     <div class="meta">Apertura: {{ exp.fecha_apertura }} &nbsp;·&nbsp; Estado: {{ exp.estado }}</div>
+                                    <div class="meta">Responsable: {{ exp.usuarios.nombre if exp.usuarios else 'Sin asignar' }}</div>
                                 </div>
+                                {# RF5: solo el titular elimina y reasigna #}
+                                {% if session.rol == 'titular' %}
                                 <form action="{{ url_for('eliminar_expediente', expediente_id=exp.id) }}" method="POST"
                                       onsubmit="return confirm('¿Eliminar el expediente {{ exp.numero_expediente }} y todos sus documentos? Esta acción no se puede deshacer.');">
                                     <button type="submit" class="btn-eliminar">Eliminar</button>
                                 </form>
+                                {% endif %}
                             </div>
+
+                            {% if session.rol == 'titular' %}
+                            <form action="{{ url_for('reasignar_expediente', expediente_id=exp.id) }}" method="POST" class="reasignar d-flex gap-2 align-items-center">
+                                <label class="form-label mb-0" for="resp-{{ exp.id }}">Reasignar a</label>
+                                <select id="resp-{{ exp.id }}" name="abogado_responsable_id" class="form-select form-select-sm">
+                                    {% for u in usuarios %}
+                                    <option value="{{ u.id }}" {% if u.id == exp.abogado_responsable_id %}selected{% endif %}>{{ u.nombre }}</option>
+                                    {% endfor %}
+                                </select>
+                                <button type="submit" class="btn-ghost">Guardar</button>
+                            </form>
+                            {% endif %}
 
                             <!-- Formulario para subir PDF a este expediente -->
                             <form action="{{ url_for('subir_documento') }}" method="POST" enctype="multipart/form-data" class="fila-subida row g-2 align-items-center">
@@ -431,7 +454,7 @@
                                             {# <span class="doc-autor">Subido por {{ doc.usuarios.nombre if doc.usuarios else "—" }}</span> #}
                                         </div>
                                         <div>
-                                            <a href="{{ doc.archivo_url }}" target="_blank" class="btn-ghost">Ver PDF</a>
+                                            <a href="{{ url_for('ver_pdf', doc_id=doc.id) }}" target="_blank" rel="noopener" class="btn-ghost">Ver PDF</a>
                                             <button type="button" class="btn-ghost" data-bs-toggle="modal" data-bs-target="#modalOCR{{ doc.id }}">
                                                 Ver texto OCR
                                             </button>
